@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>QueryDoc</title>
+</head>
+<body>
+
+    <h1>QueryDoc</h1>
+
+    <p>Ask questions from your PDF using AI.</p>
+
+    <h3>Upload a PDF</h3>
+
+    <form action="/upload" method="POST" enctype="multipart/form-data">
+        <input type="file" name="pdf" accept=".pdf">
+        <br><br>
+        <button type="submit">Upload</button>
+    </form>
+
+    <hr>
+
+    <h3>Ask a Question</h3>
+
+    <form action="/ask" method="POST">
+        <input type="text" name="question" placeholder="Type your question" required>
+        <button type="submit">Ask</button>
+    </form>
+
+</body>
+</html>
