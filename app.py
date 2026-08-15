@@ -4,19 +4,24 @@ from pypdf import PdfReader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from sentence_transformers import SentenceTransformer
 import faiss
+import ollama
 
 app = Flask(__name__)
 
-# Load the embedding model
+
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Variables to store PDF data
+
 pdf_text = ""
 chunks = []
 faiss_index = None
 
+
 UPLOAD_FOLDER = "uploads"
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+
+
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
 @app.route("/")
@@ -28,32 +33,41 @@ def home():
 def upload():
     global pdf_text, chunks, faiss_index
 
-    # Get uploaded PDF
-    pdf = request.files["pdf"]
+    pdf = request.files.get("pdf")
 
-    # Save PDF
-    filepath = os.path.join(app.config["UPLOAD_FOLDER"], pdf.filename)
+    
+    if not pdf or pdf.filename == "":
+        return "Please select a PDF file."
+
+   
+    if not pdf.filename.lower().endswith(".pdf"):
+        return "Please upload a PDF file."
+
+    filepath = os.path.join(
+        app.config["UPLOAD_FOLDER"],
+        pdf.filename
+    )
+
     pdf.save(filepath)
 
-    # Read PDF
+    
     reader = PdfReader(filepath)
 
     pdf_text = ""
 
-    # Extract text from every page
-    for i, page in enumerate(reader.pages):
+    
+    for page in reader.pages:
         extracted = page.extract_text()
-
-        print(f"\n------ Page {i + 1} ------")
-        print(extracted)
 
         if extracted:
             pdf_text += extracted
 
-    print("\n========== FINAL PDF TEXT ==========")
-    print("Length of pdf_text:", len(pdf_text))
+    if not pdf_text.strip():
+        return "Could not extract text from this PDF."
 
-    # Split PDF text into chunks
+    print("\n========== PDF UPLOADED ==========")
+    print("PDF text length:", len(pdf_text))
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=50
@@ -63,59 +77,110 @@ def upload():
 
     print("Number of chunks:", len(chunks))
 
-    # Print chunks
-    for i, chunk in enumerate(chunks):
-        print(f"\n------ Chunk {i + 1} ------")
-        print(chunk)
-
-    # Convert chunks into embeddings
+    
     embeddings = model.encode(chunks)
 
-    print("\nEmbeddings shape:", embeddings.shape)
+    print("Embeddings shape:", embeddings.shape)
 
-    # Create FAISS index
+   
     dimension = embeddings.shape[1]
 
     faiss_index = faiss.IndexFlatL2(dimension)
 
-    # Add embeddings to FAISS
+   
     faiss_index.add(embeddings)
 
-    print("Number of vectors in FAISS:", faiss_index.ntotal)
+    print("Vectors stored in FAISS:", faiss_index.ntotal)
+    print("Document ready for questions.")
+
 
     return redirect(url_for("home"))
 
 
 @app.route("/ask", methods=["POST"])
 def ask():
-    question = request.form["question"]
+    question = request.form.get("question", "").strip()
 
-    print("\nQuestion:", question)
+    if not question:
+        return "Please enter a question."
 
+    #
     if faiss_index is None:
         return "Please upload a PDF first."
 
-    # Convert the question into an embedding
+    print("\n========== QUESTION ==========")
+    print(question)
+
+   
     question_embedding = model.encode([question])
 
-    # Search FAISS for the 3 most relevant chunks
-    distances, indices = faiss_index.search(question_embedding, 3)
+    
+    distances, indices = faiss_index.search(
+        question_embedding,
+        8
+    )
 
-    print("\n========== RELEVANT CHUNKS ==========")
-
+  
     relevant_chunks = []
 
-    for i, index in enumerate(indices[0]):
-        chunk = chunks[index]
+    for index in indices[0]:
+        start = max(0, index - 1)
+        end = min(len(chunks), index + 2)
 
-        print(f"\n------ Result {i + 1} ------")
-        print("Distance:", distances[0][i])
-        print("Chunk:")
+        for i in range(start, end):
+            if chunks[i] not in relevant_chunks:
+                relevant_chunks.append(chunks[i])
+   
+    context = "\n\n".join(relevant_chunks)
+
+    print("\n========== RELEVANT CONTEXT RETRIEVED ==========")
+
+    for i, chunk in enumerate(relevant_chunks):
+        print(f"\n--- Relevant Chunk {i + 1} ---")
         print(chunk)
 
-        relevant_chunks.append(chunk)
+  
+    prompt = f"""
+You are a document question-answering assistant.
 
-    return "<br><br>".join(relevant_chunks)
+Answer the user's question using ONLY the information
+provided in the PDF context below.
+
+If the answer is not present in the context, say:
+
+"I could not find the answer in the uploaded PDF."
+
+Do not make up information.
+
+PDF CONTEXT:
+{context}
+
+USER QUESTION:
+{question}
+
+Answer clearly and concisely.
+"""
+
+    print("\n========== SENDING TO LLAMA ==========")
+
+    response = ollama.chat(
+        model="llama3.2:3b",
+        messages=[
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    )
+
     
+    answer = response["message"]["content"]
+
+    print("\n========== LLAMA ANSWER ==========")
+    print(answer)
+
+    return answer
+
+
 if __name__ == "__main__":
     app.run(debug=True)
